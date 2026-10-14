@@ -1,0 +1,130 @@
+# ==============================================================================
+# VAJRAX Smart Door - .gitignore
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Environment Variables
+# ------------------------------------------------------------------------------
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Keep .env.example tracked
+!.env.example
+
+# ------------------------------------------------------------------------------
+# Firebase Credentials & Service Accounts
+# ------------------------------------------------------------------------------
+*firebase-adminsdk*.json
+*serviceAccountKey*.json
+*service-account*.json
+service-account.json
+serviceAccount.json
+serviceAccountKey.json
+.runtimeconfig.json
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+
+# ------------------------------------------------------------------------------
+# Private Keys & Certificates
+# ------------------------------------------------------------------------------
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.der
+*.mobileprovision
+
+# ------------------------------------------------------------------------------
+# Node.js
+# ------------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ------------------------------------------------------------------------------
+# Build Output (React, Vite, Web)
+# ------------------------------------------------------------------------------
+dist/
+dist-ssr/
+build/
+out/
+.output/
+*.tsbuildinfo
+.turbo/
+.cache/
+.parcel-cache/
+
+# ------------------------------------------------------------------------------
+# React Native & Expo
+# ------------------------------------------------------------------------------
+.expo/
+.expo-shared/
+web-build/
+.metro/
+metro-cache/
+*.apk
+*.aab
+*.ipa
+
+# ------------------------------------------------------------------------------
+# Embedded Firmware & Hardware Build Artifacts (ESP8266 / PlatformIO / Arduino)
+# ------------------------------------------------------------------------------
+.pio/
+.pioenvs/
+.piolibdeps/
+.clangd/
+*.hex
+*.bin
+*.elf
+
+# ------------------------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------------------------
+logs/
+*.log
+
+# ------------------------------------------------------------------------------
+# macOS
+# ------------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Other OS files
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+
+# ------------------------------------------------------------------------------
+# IDE & Editor Files
+# ------------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
