@@ -15,7 +15,7 @@ To satisfy these contrasting operational demands without compromise, the system 
 1. **The Local Access Path (Validated & Working):** A direct, peer-to-peer radio frequency link utilizing the connectionless **ESP-NOW** protocol operating on the 2.4 GHz ISM band. Workstation Table Nodes (Table 1, Table 2, Table 3) communicate directly with the Door Controller Node via ESP-NOW unicast, actuating a relay interface momentarily upon a physical button press completely independent of local routers, gateways, or the internet.
 2. **The Remote Access Path (Planned / Development Stage):** A cloud-mediated control loop utilizing **Google Firebase** (Authentication and Realtime Database) bridging cross-platform client applications (**React Native / Expo** on mobile and **React / Vite** on web) to the Door Controller Node over standard 802.11 b/g/n Wi-Fi.
 
-The system acts strictly as an **authorized auxiliary door-release trigger**. It interfaces with the laboratory's door release circuit (such as a Request-to-Exit / REX loop or access-control power supply trigger) via a relay contact. The system generates a controlled momentary release signal; it does not directly drive or power lock motor coils, and it does not bypass or disable existing laboratory fingerprint scanners, card readers, or physical deadbolts.
+The system acts strictly as an **authorized auxiliary door-release trigger**. It interfaces with the laboratory's door release circuit (such as an existing authorized door-release input/circuit or access-control power supply trigger) via a relay contact. The system generates a controlled momentary release signal; it does not directly drive or power lock motor coils, and it does not bypass or disable existing laboratory fingerprint scanners, card readers, or physical deadbolts.
 
 ---
 
@@ -54,7 +54,7 @@ flowchart TD
 
         subgraph CLOUD["Cloud Infrastructure (Google Firebase)"]
             F_AUTH["Firebase Authentication<br/>(Identity & JWT)"]:::cloud
-            F_RTDB["Firebase Realtime Database<br/>(State, Commands, Logs)"]:::cloud
+            F_RTDB["Firebase Realtime Database<br/>(State, Commands, Temporary Access & Activity)"]:::cloud
         end
     end
 
@@ -72,7 +72,7 @@ flowchart TD
 
     subgraph ACTUATION_LAYER["ISOLATED ACTUATION INTERFACE"]
         RELAY["5V Relay Module<br/>(Momentary Dry Contact N.O.)"]:::hardware
-        DOOR_CIRCUIT["Existing Laboratory<br/>Door-Release Circuit (REX / Panel)"]:::hardware
+        DOOR_CIRCUIT["Existing Laboratory<br/>Door-Release Circuit"]:::hardware
     end
 
     %% Remote Path Connections
@@ -100,8 +100,9 @@ flowchart TD
 | **Protocol** | ESP-NOW (2.4 GHz raw MAC layer frames) | HTTPS / Firebase Realtime Database communication |
 | **Intermediary Broker** | None (direct peer-to-peer RF) | Firebase Authentication & Realtime Database |
 | **Network Reliance** | Zero. Independent of router, AP, and WAN. | Requires active Wi-Fi AP and internet uplink. |
-| **Authentication Model** | MAC address recognition & hardcoded payload validation | Firebase user session token + secondary Door PIN |
-| **Primary Safety Function** | Immediate lab egress/ingress convenience | Audited administrative & remote access |
+| **Authentication & Authorization** | MAC address recognition & hardcoded payload validation | Firebase user session token + secondary Door PIN + Time-bounded temporary access grant (when applicable) |
+| **Activity Logging Boundary** | **Zero logging.** Physical button events are purely local and strictly excluded from Firebase. | **Targeted logging.** Remote release requests initiated under temporary access grants are recorded in Firebase. |
+| **Primary Operational Role** | Immediate lab egress/ingress convenience | Audited administrative, standard, and time-bounded temporary access |
 | **Deployment Status** | **Implemented & Bench Validated** | **Planned / Under Development** |
 
 ---
@@ -196,12 +197,14 @@ The Door NodeMCU registers an asynchronous receive callback routine (`esp_now_re
 
 ---
 
-## 5. Remote Communication Architecture
+## 5. Remote Communication & Temporary Access Architecture
 
-The remote communication architecture enables authenticated laboratory personnel to release the door and inspect telemetry from outside the direct line of sight or off-site.
+The remote communication architecture enables authenticated laboratory personnel and authorized temporary guests to trigger door release and inspect device telemetry without being physically present at a workbench.
 
 > [!NOTE]
-> **Implementation Status:** The remote communication path is currently in the **planned / development stage**. The software specifications, database schema, and client protocols below represent the architectural baseline for implementation.
+> **Implementation Status:** The remote communication path and temporary access subsystem are currently in the **planned / development stage**. The software specifications, authorization models, and database schemas below define the authoritative architectural baseline.
+
+### 5.1 Remote Architecture & Standard Ingress Flow
 
 ```
 +-------------------------------------------------------------------------+
@@ -213,20 +216,21 @@ The remote communication architecture enables authenticated laboratory personnel
                                      |
                                      v
 +-------------------------------------------------------------------------+
-|               Step 2: Dual-Layer Authorization (Door PIN)               |
+|                 Step 2: Dual-Layer Ingress Authorization                |
 |                                                                         |
-|  [ Client Enters Door PIN ] ---> Door PIN verification must be enforced |
-|    by a trusted authorization layer; client-side validation may provide  |
-|    UI feedback but must not be the sole security control.                |
+|  - Validates user role and authorization permissions                     |
+|  - If temporary user: evaluates time-bounded grant validity             |
+|  - [ Client Enters Door PIN ] ---> Independent numeric PIN verified     |
+|    against secure reference / backend authorization rules               |
 +------------------------------------+------------------------------------+
                                      |
                                      v
 +-------------------------------------------------------------------------+
 |                  Step 3: Database Command Dispatch                      |
 |                                                                         |
-|  Client writes to Firebase Realtime Database:                           |
+|  Client writes release command to Firebase Realtime Database:           |
 |  PATH: /commands/doorRelease                                            |
-|  PAYLOAD: { "uid": "...", "timestamp": 1718000000, "status": "PENDING" }|
+|  PAYLOAD: { "uid": "...", "timestamp": ServerValue.TIMESTAMP, ... }     |
 +------------------------------------+------------------------------------+
                                      |
                                      v
@@ -234,36 +238,140 @@ The remote communication architecture enables authenticated laboratory personnel
 |                 Step 4: Door NodeMCU Wi-Fi Ingestion                    |
 |                                                                         |
 |  Door NodeMCU (Connected to Lab Wi-Fi on Channel 1)                     |
-|  Monitors /commands/doorRelease (mechanism finalized during development) |
-|  - Validates remoteAccessEnabled == true                                |
-|  - Validates timestamp freshness (delta < 10.0s)                        |
+|  Monitors /commands/doorRelease (transport finalized during development)|
+|  - Validates /systemControl/remoteAccessEnabled == true                 |
+|  - Validates timestamp freshness (command age < 10.0s)                  |
 +------------------------------------+------------------------------------+
                                      |
                                      v
 +-------------------------------------------------------------------------+
-|                 Step 5: Actuation & Audit Synchronization                |
+|                 Step 5: Actuation & Command Settlement                  |
 |                                                                         |
-|  - Energizes Relay for 500 ms momentary pulse                            |
-|  - Writes Audit Log to /logs (source: "MOBILE_APP" / "WEB_DASHBOARD")   |
-|  - Clears / acknowledges command in /commands/doorRelease               |
+|  - Energizes Relay GPIO for approximately 500 ms momentary pulse        |
+|  - Relay dry contacts momentarily trigger door-release circuit          |
+|  - Acknowledges command record in /commands/doorRelease                 |
+|  - If operating under temporary grant: appends record to                |
+|    /temporaryAccessActivity/{accessGrantId}                             |
 +-------------------------------------------------------------------------+
 ```
 
-### 5.1 Step-by-Step Planned Flow
-1. **Identity Authentication:** The client launches the React Native or Vite web app and authenticates against Firebase Authentication with an authorized email and password. A signed JWT is returned and held securely in local storage.
-2. **Door PIN Verification:** To initiate an unlock, the user must enter an independent 4-to-6 digit numeric Door PIN. This prevents unauthorized releases in the event that an unlocked mobile phone or active workstation session is left unattended.
-3. **Command Generation:** Upon PIN validation, the client issues an authenticated `PUT` or `PUSH` request to `/commands/doorRelease` containing:
-   - `commandId`: Unique UUID.
-   - `uid`: Authenticated user's Firebase UID.
-   - `timestamp`: UTC millisecond server timestamp (`ServerValue.TIMESTAMP`).
-   - `status`: `"PENDING"`.
-4. **Edge Ingestion:** The Door NodeMCU, connected to the local 2.4 GHz Wi-Fi router on Channel 1, will communicate with Firebase Realtime Database using the implementation finalized during development to monitor `/commands/doorRelease`.
-5. **Command Validation:** The Door NodeMCU verifies:
-   - Global administrative flag `/systemControl/remoteAccessEnabled` is `true`.
-   - The command timestamp is fresh (less than 10.0 seconds old) to avoid executing stale queued requests after network reconnections.
-6. **Actuation & State Acknowledgment:** The Door NodeMCU activates the relay for the configured momentary pulse (approximately 500 ms), transitions the command record to `"COMPLETED"`, updates the last known relay state under `/status/doorController`, and appends an immutable entry to `/logs`.
+### 5.2 Dedicated Temporary-Access Authorization Flow
 
----
+Temporary access provides controlled, time-bounded remote door-release permissions to non-permanent users (such as visiting researchers, delivery staff, or contractors like Rahul).
+
+```
+[ Authenticated User (e.g., Rahul) ]
+                 |
+                 v
+[ 1. Temporary Access Grant Exists? ]
+  - Checks /temporaryAccess for valid record matching recipientUid
+                 | YES
+                 v
+[ 2. Server-Authoritative Time Check ]
+  - Evaluates: serverTime >= startTime AND serverTime < endTime
+                 | WITHIN WINDOW
+                 v
+[ 3. Grant Status Active & Not Revoked? ]
+  - Evaluates: status != "REVOKED"
+                 | NOT REVOKED
+                 v
+[ 4. Master Remote Access Enabled? ]
+  - Evaluates: /systemControl/remoteAccessEnabled == true
+                 | ENABLED
+                 v
+[ 5. Secondary Door PIN Verification ]
+  - User enters numeric Door PIN -> Verified against secure reference
+                 | VALID PIN
+                 v
+[ 6. Remote Release Request Dispatched ]
+  - Writes to /commands/doorRelease
+  - Records request under /temporaryAccessActivity/{accessGrantId}
+                 |
+                 v
+[ 7. Door NodeMCU Wi-Fi Ingestion & Relay Pulse ]
+  - Edge controller receives command over Channel 1 Wi-Fi link
+  - Verifies command freshness (< 10s)
+  - Energizes relay for approximately 500 ms momentary pulse
+  - Release circuit momentarily triggered
+```
+
+### 5.3 Temporary Access Grant Model & Lifecycle
+
+#### Permission Model
+Temporary access is engineered as a time-bounded permission grant attached to a user account, rather than as a permanent global user role. A user retains their base account role (for example, Administrator or Standard User), while authorization for remote door-release requests is additionally governed by the validity of an associated temporary access grant.
+
+#### Conceptual Grant Data Schema
+Each temporary access grant is defined conceptually with the following fields:
+
+| Field Name | Data Type | Description |
+|---|---|---|
+| `accessGrantId` | String | Unique identifier for the temporary access grant (e.g., `grant_abc123`). |
+| `recipientUid` | String | Firebase Authentication UID of the user receiving access (e.g., Rahul). |
+| `recipientEmail` | String | Email address of the recipient for human-readable administrative identification. |
+| `grantedBy` | String | Firebase Authentication UID of the administrator who created the grant. |
+| `doorId` | String | Target door identifier for access control scoping (e.g., `door_main_lab`). |
+| `startTime` | Integer | UTC millisecond timestamp defining when the access window begins. |
+| `endTime` | Integer | UTC millisecond timestamp defining when the access window terminates. |
+| `status` | String | Lifecycle state: `PENDING`, `ACTIVE`, `EXPIRED`, or `REVOKED`. |
+| `createdAt` | Integer | UTC millisecond timestamp when the grant was created. |
+
+#### Lifecycle State Machine
+```
+   [ Administrator Creates Grant ]
+                  |
+                  v
+             ( PENDING )  --- startTime > serverTime (Request denied)
+                  |
+                  | When serverTime >= startTime
+                  v
+             ( ACTIVE )   --- startTime <= serverTime < endTime (Request permitted)
+                  |
+        +---------+---------+
+        |                   |
+        | serverTime >=     | Administrator executes
+        | endTime           | early revocation
+        v                   v
+   ( EXPIRED )         ( REVOKED )
+   [Permanently]       [Permanently]
+   [  Denied   ]       [  Denied   ]
+```
+
+- **`PENDING`:** Grant created with a future `startTime`. The user cannot execute release requests until `startTime` arrives.
+- **`ACTIVE`:** Authoritative server time is within the window `[startTime, endTime)` and the grant has not been revoked. Ingress release requests are authorized.
+- **`EXPIRED`:** Authoritative server time has reached or passed `endTime`. The grant is permanently invalid; requests are denied.
+- **`REVOKED`:** Manually terminated early by an administrator. Authorization terminates immediately and permanently.
+
+#### Server-Authoritative Time Enforcement vs. Display Status
+1. **No Client Clock Reliance:** Authorization expiry must be evaluated using **server-authoritative time** (e.g., Firebase Realtime Database Security Rules server timestamp variables `now` or backend verification) and must **not** depend on the client phone or browser clock. A user altering their device clock cannot bypass window boundaries.
+2. **Dynamic Rule Evaluation:** Firebase Security Rules evaluate `now < data.child('endTime').val()` dynamically at the exact instant a write is attempted. Therefore, authorization denies access **immediately after `endTime`**, even if a stored display `status` string in the database document has not yet been updated from `ACTIVE` to `EXPIRED`. The architecture does not claim an automatic real-time mutation of database strings without a dedicated background trigger.
+
+### 5.4 Activity Boundary & Recording Policy
+
+#### Local vs. Remote Event Boundary
+The system establishes a strict separation between physical bench triggers and cloud activity logging:
+- **Local ESP-NOW Events (Workstation Tables 1, 2, 3):** Physical button presses transmit directly to the Door NodeMCU over ESP-NOW and trigger the relay purely at the hardware layer. These local bench interactions are **strictly excluded** from Firebase temporary-access activity history.
+- **Remote Temporary Ingress Events:** Remote release requests initiated under a temporary access grant are recorded under `/temporaryAccessActivity/{accessGrantId}` to provide full accountability and attribution.
+
+#### Accurate Event Nomenclature (Absence of Door Position Sensor)
+The system currently has **no physical door-position sensor** (e.g., magnetic reed switch or contact sensor). The controller energizes the relay dry contacts for ~500 ms to pulse the external release circuit; it has no empirical feedback confirming whether the door latch cleared, the frame physically swung open, or the door was held open.
+
+Therefore, recorded audit events are formally documented as:
+`"Remote release command requested/issued"`
+rather than `"Door opened"`.
+
+#### Conceptual Temporary Activity Log Schema
+Every remote release request submitted under temporary access is logged with the following fields:
+
+| Field Name | Data Type | Description |
+|---|---|---|
+| `requestId` | String | Unique identifier for the release request event. |
+| `timestamp` | Integer | Server-authoritative UTC millisecond timestamp when the request was processed. |
+| `user` | String | Identity of the requesting user (`uid` and email/displayName). |
+| `accessGrantId` | String | ID of the temporary access grant under which the request was submitted. |
+| `doorId` | String | Target door identifier. |
+| `action` | String | Action constant: `"REMOTE_RELEASE_REQUESTED"`. |
+| `method` | String | Ingress client platform: `"MOBILE_APP"` or `"WEB_DASHBOARD"`. |
+| `status` | String | Request status: `"REMOTE_RELEASE_REQUESTED"`, `"REJECTED_EXPIRED"`, `"REJECTED_REVOKED"`, `"REJECTED_INVALID_PIN"`, or `"REJECTED_REMOTE_DISABLED"`. This status reflects command evaluation and does not assert that the physical door opened. |
 
 ## 6. Door NodeMCU Responsibilities
 
@@ -315,7 +423,7 @@ The Door NodeMCU functions as the central edge controller and physical bridge be
 | **Firebase Cloud Client** | Subscribes to `/commands` and `/systemControl` endpoints. | **Planned / In Development** |
 | **Remote Command Validation** | Checks timestamp validity (< 10s) and lockout flags before firing relay. | **Planned / In Development** |
 | **Device Heartbeat Publisher** | Periodically writes RSSI, uptime, and status to `/status/doorController`. | **Planned / In Development** |
-| **Local-to-Cloud Log Dispatch** | Mirrors local ESP-NOW triggers to cloud `/logs` when Wi-Fi is connected. | **Planned / In Development** |
+| **Temporary Access Command Auditing** | Records remote release requests issued under temporary access grants to `/temporaryAccessActivity`. Local ESP-NOW events are strictly excluded. | **Planned / In Development** |
 
 ---
 
@@ -345,7 +453,7 @@ The three Table NodeMCUs (Table 1, Table 2, Table 3) operate as lightweight, edg
 | **ESP-NOW** | Low-latency, connectionless peer-to-peer unicast transmission of button actuation commands over 2.4 GHz raw RF frames. | Unicast from Table 1, 2, 3 to Door Controller Node MAC address. | Local Subsystem | **Currently Validated & Working** |
 | **802.11 b/g/n Wi-Fi** | Local area wireless network connection linking Door NodeMCU to the lab router. Operates strictly on Channel 1. | Bi-directional between Door Controller Node and Lab Wi-Fi AP. | Edge-to-Cloud Subsystem | **Planned / Under Development** |
 | **HTTPS (TLS 1.2/1.3)** | Secure transport protocol for user authentication, initial token exchange, and REST operations. | Bi-directional between Mobile/Web clients and Firebase Cloud. | Application-to-Cloud Subsystem | **Planned / Under Development** |
-| **Firebase Realtime Database** | Bi-directional state synchronization, command queuing, telemetry streaming, and activity audit logging. The exact ESP8266-to-Firebase communication mechanism will be finalized during implementation. | Bi-directional between Firebase Cloud, Clients, and Door Controller. | Cloud Integration Subsystem | **Planned / Under Development** |
+| **Firebase Realtime Database** | Bi-directional state synchronization, command queuing, telemetry streaming, temporary access grants, and temporary access activity auditing. The exact ESP8266-to-Firebase communication mechanism will be finalized during implementation. | Bi-directional between Firebase Cloud, Clients, and Door Controller. | Cloud Integration Subsystem | **Planned / Under Development** |
 | **Firebase Authentication** | Identity management, credential verification, and JSON Web Token (JWT) issuance. | Inbound from Mobile/Web clients to Firebase Auth servers. | Security & Identity Subsystem | **Planned / Under Development** |
 
 ---
@@ -419,26 +527,38 @@ The cloud architecture utilizes Google Firebase to provide a serverless, highly 
   "commands": {
     "doorRelease": {
       "commandId": "cmd-8823-9912",
-      "requestedBy": "user_uid_12345",
+      "requestedBy": "user_uid_rahul_67890",
+      "accessGrantId": "grant-rahul-20261015",
       "clientType": "MOBILE_APP",
-      "timestamp": 1718000000000,
+      "timestamp": 1718030400000,
       "status": "PENDING"
     }
   },
-  "logs": {
-    "-NxyZaBcDeFgHiJk": {
-      "timestamp": 1718000000000,
-      "source": "TABLE_1",
-      "triggeredBy": "LOCAL_HARDWARE",
-      "action": "DOOR_RELEASE",
-      "status": "SUCCESS"
-    },
-    "-NxyZaBcDeFgHiJm": {
-      "timestamp": 1718000025000,
-      "source": "MOBILE_APP",
-      "triggeredBy": "user_uid_12345",
-      "action": "DOOR_RELEASE",
-      "status": "SUCCESS"
+  "temporaryAccess": {
+    "grant-rahul-20261015": {
+      "accessGrantId": "grant-rahul-20261015",
+      "recipientUid": "user_uid_rahul_67890",
+      "recipientEmail": "rahul@vajrax.lab",
+      "grantedBy": "user_uid_12345",
+      "doorId": "door_main_lab",
+      "startTime": 1718028000000,
+      "endTime": 1718042400000,
+      "status": "ACTIVE",
+      "createdAt": 1718025000000
+    }
+  },
+  "temporaryAccessActivity": {
+    "grant-rahul-20261015": {
+      "req-9912": {
+        "requestId": "req-9912",
+        "timestamp": 1718030400000,
+        "user": "user_uid_rahul_67890",
+        "accessGrantId": "grant-rahul-20261015",
+        "doorId": "door_main_lab",
+        "action": "REMOTE_RELEASE_REQUESTED",
+        "method": "MOBILE_APP",
+        "status": "REMOTE_RELEASE_REQUESTED"
+      }
     }
   },
   "users": {
@@ -447,14 +567,23 @@ The cloud architecture utilizes Google Firebase to provide a serverless, highly 
       "displayName": "Lead Roboticist",
       "role": "admin",
       "isActive": true
+    },
+    "user_uid_rahul_67890": {
+      "email": "rahul@vajrax.lab",
+      "displayName": "Rahul (Guest Researcher)",
+      "role": "user",
+      "isActive": true
     }
   }
 }
 ```
 
 ### 10.2 Architectural Cloud Boundaries
-- **No Cloud Functions:** The system core does not require custom Node.js Cloud Functions. Logic is cleanly divided between client-side validation rules, Firebase Realtime Database Security Rules, and edge microcontroller firmware.
-- **Command Life Cycle:** Commands in `/commands/doorRelease` follow an atomic lifecycle: `PENDING` -> `PROCESSING` -> `COMPLETED` (or pruned), preventing duplicate executions.
+- **No Cloud Functions Required for Core Authorization:** The system core does not strictly require custom backend cloud functions. Authorization is enforced directly through Firebase Realtime Database Security Rules evaluating server-authoritative time (`now`), client token authentication, and data validation rules alongside edge microcontroller firmware logic.
+- **Server-Authoritative Evaluation:** Access window validity and timestamp comparisons are evaluated strictly using server-side authoritative time (`now`). Authorization is completely independent of the client mobile or web device clock.
+- **Immediate Expiry Without Stored Status Mutation:** Firebase authorization denies access immediately once `now >= endTime` dynamically, even if the stored display status string in the database has not yet been changed to `EXPIRED`.
+- **Targeted Temporary Activity Logging Boundary:** Physical table-button events (Table 1, Table 2, Table 3 via ESP-NOW) are completely offline and are **never** stored in Firebase activity history. The `/temporaryAccessActivity` collection is dedicated specifically and exclusively to recording remote release requests issued under temporary access grants.
+- **Command Lifecycle:** Commands in `/commands/doorRelease` follow an atomic lifecycle: `PENDING` -> `PROCESSING` -> `COMPLETED` (or pruned), preventing duplicate executions.
 
 ---
 
@@ -483,8 +612,10 @@ The system enforces defense-in-depth across both physical radio interfaces and i
 |   - Independent 4-to-6 digit numeric PIN required before command dispatch |
 |   - Client-side 3-strike rate-limiting lockout                            |
 |                                                                           |
-|   [ Layer 5: Role-Based Authorization (RBAC & Security Rules) ]           |
+|   [ Layer 5: Role-Based & Time-Bounded Authorization ]                    |
 |   - Admin vs. Standard User separation                                    |
+|   - Temporary access grants evaluated against server-authoritative time   |
+|   - Security Rules reject writes if now >= endTime or status == REVOKED   |
 |   - Database rules block unauthorized writes to /systemControl            |
 |                                                                           |
 |   [ Layer 6: Administrative Emergency Lockout ]                           |
@@ -521,7 +652,7 @@ A fundamental architectural requirement of VAJRAX Smart Door is that **local ope
 
 1. **Controlled Momentary Release:** The currently validated Door NodeMCU firmware activates the relay for approximately 500 ms. Under no circumstances does the firmware leave the relay pin continuously energized.
 2. **Safe Default Relay State:** The relay control output is assigned to a non-boot-strapping GPIO (e.g., `GPIO4` / `D2`). Upon power-up, brownout, reset, or unhandled crash, this pin remains high-impedance / low, keeping the relay de-energized and preventing an intentional trigger of the door-release circuit during reset, startup, brownout, or crash conditions.
-3. **No Direct Motor Control:** The system does not supply raw drive currents or PWM waveforms to DC motors, linear actuators, or lock servos. The relay interfaces as a low-current dry contact closure to an existing access control power unit or Request-to-Exit (REX) input terminal.
+3. **No Direct Motor Control:** The system does not supply raw drive currents or PWM waveforms to DC motors, linear actuators, or lock servos. The relay interfaces as a low-current dry contact closure to an existing access control power unit or authorized door-release input/circuit.
 4. **Relay Electrical Interface:** The 5V single-channel relay board provides a controlled electrical contact interface between the ESP8266 logic output and the existing door-release circuit. Appropriate isolation between the microcontroller logic and the door release circuit should be verified during hardware integration testing.
 5. **Preservation of Existing Security:** The system acts strictly in parallel with existing door security. It cannot override physical mechanical locks, deadbolts, or external biometric/fingerprint mechanisms required by lab safety policies.
 6. **Bench Testing Protocol:** All firmware changes, radio channel configurations, and relay timing logic must be rigorously bench-tested on breadboards and test jigs before any electrical interface is connected to the physical laboratory door.
@@ -556,12 +687,13 @@ A fundamental architectural requirement of VAJRAX Smart Door is that **local ope
        v
 [Laboratory Door Release Circuit]
        |
-       | Door latch momentarily releases
+       | Momentary dry contact closure signals door release circuit
        v
 [Door NodeMCU Timer Expiry]
        |
        | 500 ms elapsed -> Drives Relay GPIO LOW
-       | Contact opens -> Door re-latches
+       | Contact opens -> Relay returns to de-energized safe state
+       | (Local event complete; zero records written to Firebase activity history)
 ```
 
 ### 14.2 Flow B: Table 2 Button Press (Implemented & Validated)
@@ -595,17 +727,56 @@ Identical to Flow A, with Table 3 NodeMCU detecting button depression and transm
        | Receives update via Wi-Fi (Channel 1) stream
        | Checks /systemControl/remoteAccessEnabled == true
        | Checks (currentTime - timestamp) < 10000 ms
-       | Drives Relay GPIO HIGH for 500 ms
-       | Sets command status to "COMPLETED"
-       | Writes audit record to /logs
+       | Drives Relay GPIO HIGH for approximately 500 ms
+       | Settles command status to "COMPLETED"
        v
 [Relay Module -> Door Release Circuit]
        |
-       | Door latch momentarily releases for ~500 ms
+       | Relay momentary dry contact closes for ~500 ms
+       | Relay returns to de-energized safe state
 ```
 
 ### 14.5 Flow E: Remote Web Request (Planned Cloud Flow)
 Identical to Flow D, originating from the React/Vite Web Dashboard running in a desktop browser.
+
+### 14.6 Flow F: Temporary Access Remote Ingress Request (Planned Cloud Flow)
+```
+[Guest Researcher (e.g., Rahul)]
+       |
+       | Opens Expo Mobile App or Web Dashboard
+       | Authenticates with Firebase Auth (JWT received)
+       | App verifies active temporary access grant exists
+       | Inputs 4-digit Door PIN
+       v
+[Client Application]
+       |
+       | Issues release request with accessGrantId: "grant-rahul-20261015"
+       v
+[Firebase Realtime Database & Security Rules]
+       |
+       | Evaluates server-authoritative time against grant:
+       |   - now >= startTime (e.g., 14:00)
+       |   - now < endTime (e.g., 18:00)
+       |   - grant status != "REVOKED"
+       |   - /systemControl/remoteAccessEnabled == true
+       |   - Door PIN verification passes
+       | Commits command to /commands/doorRelease
+       | Immutably records audit entry under /temporaryAccessActivity/grant-rahul-20261015/req-9912:
+       |   { requestId, timestamp, user, accessGrantId, doorId,
+       |     action: "REMOTE_RELEASE_REQUESTED", method: "MOBILE_APP", status: "REMOTE_RELEASE_REQUESTED" }
+       v
+[Door NodeMCU]
+       |
+       | Receives command update via Wi-Fi (Channel 1)
+       | Checks (currentTime - timestamp) < 10000 ms
+       | Drives Relay GPIO HIGH for approximately 500 ms
+       | Settles command status to "COMPLETED"
+       v
+[Relay Module -> Door Release Circuit]
+       |
+       | Relay momentary dry contact closes for ~500 ms
+       | Relay returns to de-energized safe state
+```
 
 ---
 
@@ -618,11 +789,11 @@ Identical to Flow D, originating from the React/Vite Web Dashboard running in a 
 | **Table 3 Controller** | Monitors physical push button, debounces input, transmits `TABLE_3_OPEN` via ESP-NOW. | ESP8266 NodeMCU, C++, `espnow.h` | **IMPLEMENTED & VALIDATED** |
 | **Door Controller Node** | Receives ESP-NOW commands, validates payloads, manages Wi-Fi link, controls relay timing. | ESP8266 NodeMCU, C++, `espnow.h`, `ESP8266WiFi.h` | **IMPLEMENTED & VALIDATED (Local)**<br/>**PLANNED (Cloud Gateway)** |
 | **Relay Module** | Provides controlled momentary dry contact closure for door release circuit. | 5V Relay Module | **IMPLEMENTED & VALIDATED** |
-| **Door Release Circuit** | External commercial access control power supply or Request-to-Exit (REX) input terminal. | Existing Lab Hardware | **IMPLEMENTED (Existing Lab Infrastructure)** |
+| **Door Release Circuit** | External commercial access control power supply or authorized door-release input/circuit. | Existing Lab Hardware | **IMPLEMENTED (Existing Lab Infrastructure)** |
 | **Firebase Auth** | Manages user accounts, enforces password policies, issues signed JWT session tokens. | Google Firebase Authentication | **PLANNED** |
-| **Firebase RTDB** | Synchronizes command queues, device status telemetry, and immutable audit logs. | Google Firebase Realtime Database | **PLANNED** |
+| **Firebase RTDB** | Synchronizes command queues, device status telemetry, temporary access grants, and temporary access activity auditing. | Google Firebase Realtime Database | **PLANNED** |
 | **Mobile Application** | Provides authenticated remote door trigger, Door PIN input, and status monitoring on mobile devices. | React Native, Expo, TypeScript | **PLANNED** |
-| **Web Dashboard** | Provides administrative management, audit log viewer, remote access lockout toggle, and telemetry. | React 18, Vite, TypeScript, Vanilla CSS | **PLANNED** |
+| **Web Dashboard** | Provides administrative management, temporary access grant management, audit inspection of temporary access activity, remote access lockout toggle, and telemetry. | React 18, Vite, TypeScript, Vanilla CSS | **PLANNED** |
 
 ---
 
@@ -650,7 +821,7 @@ Identical to Flow D, originating from the React/Vite Web Dashboard running in a 
 
 ### ADR-06: Controlled Momentary Relay Dry Contact
 - **Decision:** Interface with the door mechanism purely as a momentary dry contact closure (approximately 500 ms), avoiding direct motor/solenoid power driving.
-- **Rationale:** Safety, compliance, and hardware protection. Direct motor driving exposes microcontrollers to high back-EMF spikes and risks violating building fire safety codes. Interfacing to existing REX / access control power loops delegates lock mechanics to certified hardware.
+- **Rationale:** Safety, compliance, and hardware protection. Direct motor driving exposes microcontrollers to high back-EMF spikes and risks violating building fire safety codes. Interfacing to the existing authorized door-release circuit delegates lock mechanics to certified hardware.
 
 ### ADR-07: Preservation of Authoritative Security
 - **Decision:** System acts strictly as an auxiliary release; existing biometric fingerprint scanners and manual key cylinders remain authoritative.
@@ -674,10 +845,10 @@ Identical to Flow D, originating from the React/Vite Web Dashboard running in a 
 | [x] Confirmed payloads:               | [ ] Secondary Door PIN verification   |
 |     - "TABLE_1_OPEN"                  | [ ] Remote unlock command handling    |
 |     - "TABLE_2_OPEN"                  | [ ] Administrative remote lockout     |
-|     - "TABLE_3_OPEN"                  | [ ] Real-time audit activity logging  |
-| [x] Door NodeMCU ESP-NOW reception    | [ ] Periodic device telemetry & RSSI  |
-| [x] 500 ms Momentary relay pulse      | [ ] Web-based user management         |
-| [x] Safe relay boot state             |                                       |
+|     - "TABLE_3_OPEN"                  | [ ] Temporary access grant management |
+| [x] Door NodeMCU ESP-NOW reception    | [ ] Temporary access activity audit   |
+| [x] 500 ms Momentary relay pulse      | [ ] Periodic device telemetry & RSSI  |
+| [x] Safe relay boot state             | [ ] Web-based user management         |
 | [x] Offline local execution           |                                       |
 +---------------------------------------+---------------------------------------+
 ```
@@ -688,7 +859,7 @@ Identical to Flow D, originating from the React/Vite Web Dashboard running in a 
 
 While the current system architecture strictly focuses on 3 table nodes, 1 door controller, and Firebase integration, the architecture is designed to accommodate future expansion:
 
-- **Additional Table Nodes:** The ESP-NOW protocol supports up to 20 registered unicast peers per ESP8266, allowing expansion to additional benches (e.g., Table 4 through Table 10) without architectural redesign.
+- **Additional Table Nodes:** The architecture can be extended to additional authorized table controllers, subject to ESP-NOW peer limits, RF conditions, firmware configuration, and validation testing.
 - **Multiple Door Zones:** The Firebase schema is structured hierarchically (`/commands/{doorId}`, `/status/{doorId}`), allowing future deployment of multiple door controllers managed by a single web dashboard.
 - **Over-the-Air (OTA) Updates:** Inclusion of signed Arduino OTA routines on the Door NodeMCU to allow firmware updates over the local Wi-Fi network without requiring physical USB access.
 - **Richer Telemetry & Diagnostics:** Expansion of the edge heartbeat to report packet drop counts, average loop cycle times, and free heap memory.
@@ -707,3 +878,5 @@ The following acceptance criteria define verifiable, testable conditions for val
 - **ARCH-006 (Controlled Interface):** The relay output shall operate strictly as a controlled momentary dry contact closure interface for existing door release circuits. Appropriate electrical isolation between logic and door power circuits should be verified during hardware integration.
 - **ARCH-007 (Remote Lockout Enforcement):** When `/systemControl/remoteAccessEnabled` is set to `false`, the Door NodeMCU shall reject all remote unlock commands while continuing to process local table button commands normally.
 - **ARCH-008 (Safe Power Recovery):** During power-on, reset, or brownout conditions, the Door NodeMCU relay control pin shall remain de-energized without intentionally generating an active relay pulse.
+- **ARCH-009 (Server-Authoritative Temporary Access Expiry):** Remote door-release requests submitted under a temporary access grant shall be evaluated against server-authoritative time (`now`). Any request submitted when `now < startTime` or `now >= endTime`, or when the grant status is `REVOKED`, shall be rejected immediately by Firebase Security Rules regardless of client device clock time or whether a stored display status field has transitioned to `EXPIRED`.
+- **ARCH-010 (Activity Boundary & Local Isolation):** Remote release requests executed under a temporary access grant shall be immutably recorded in `/temporaryAccessActivity/{accessGrantId}` with caller identity, grant ID, and action `"REMOTE_RELEASE_REQUESTED"`. Local physical button presses (Table 1, Table 2, Table 3 via ESP-NOW) shall remain completely independent and shall never generate records in Firebase activity history.
