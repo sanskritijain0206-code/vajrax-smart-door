@@ -17,7 +17,24 @@
         "users": {
             "$uid": {
                 ".read": "auth != null && (auth.uid == $uid || root.child('users').child(auth.uid).child('role').val() == 'ADMIN')",
-                ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'ADMIN'"
+                ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'ADMIN'",
+                ".validate": "newData.hasChildren(['email', 'role']) && newData.child('email').isString() && newData.child('role').isString() && (newData.child('role').val() == 'ADMIN' || newData.child('role').val() == 'STANDARD')"
+            }
+        },
+        "temporaryAccess": {
+            "$grantId": {
+                ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() == 'ADMIN' || data.child('recipientUid').val() == auth.uid)",
+                ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'ADMIN'",
+                ".validate": "newData.hasChildren(['recipientUid', 'recipientEmail', 'grantedBy', 'doorId', 'startTime', 'endTime', 'status', 'enabled', 'createdAt']) && newData.child('recipientUid').isString() && newData.child('recipientEmail').isString() && newData.child('grantedBy').isString() && newData.child('doorId').isString() && newData.child('startTime').isNumber() && newData.child('endTime').isNumber() && newData.child('status').isString() && newData.child('enabled').isBoolean() && newData.child('createdAt').isNumber() && newData.child('doorId').val() == 'vajraxdoor' && newData.child('endTime').val() > newData.child('startTime').val() && (newData.child('status').val() == 'PENDING' || newData.child('status').val() == 'ACTIVE' || newData.child('status').val() == 'EXPIRED' || newData.child('status').val() == 'REVOKED')"
+            }
+        },
+        "temporaryAccessActivity": {
+            "$grantId": {
+                ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() == 'ADMIN' || root.child('temporaryAccess').child($grantId).child('recipientUid').val() == auth.uid)",
+                "$eventId": {
+                    ".write": "auth != null && newData.child('userId').val() == auth.uid && root.child('temporaryAccess').child($grantId).child('recipientUid').val() == auth.uid && root.child('temporaryAccess').child($grantId).child('enabled').val() == true && root.child('temporaryAccess').child($grantId).child('status').val() == 'ACTIVE' && root.child('temporaryAccess').child($grantId).child('startTime').val() <= now && now < root.child('temporaryAccess').child($grantId).child('endTime').val() && root.child('doors').child('vajraxdoor').child('remoteAccessEnabled').val() == true",
+                    ".validate": "newData.hasChildren(['timestamp', 'userId', 'accessGrantId', 'doorId', 'action', 'method', 'status']) && newData.child('timestamp').isNumber() && newData.child('userId').isString() && newData.child('accessGrantId').isString() && newData.child('doorId').isString() && newData.child('action').isString() && newData.child('method').isString() && newData.child('status').isString() && newData.child('userId').val() == auth.uid && newData.child('accessGrantId').val() == $grantId && newData.child('doorId').val() == 'vajraxdoor' && newData.child('action').val() == 'REMOTE_RELEASE' && newData.child('method').val() == 'MOBILE' && newData.child('status').val() == 'REMOTE_RELEASE_REQUESTED' && newData.child('timestamp').val() <= now"
+                }
             }
         }
     }
